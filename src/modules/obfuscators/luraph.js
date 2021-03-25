@@ -1,9 +1,8 @@
-async function init(Input, execScript, saveOutput) {
+async function init(Input, saveOutput) {
     const execRes = (/^.*?\[\d\]\[\S+.-.\S+\].=.(?<constant>L_\d+_)$/m).exec(Input);
-    
-    let newScript = Input.replace(execRes[0], `print(formatConstant(${execRes.groups.constant}));`);
-    saveOutput(await execScript(newScript));
-    console.timeEnd("Dumped in");
+    const newScript = Input.replace(execRes[0], `print_(formatConstant(${execRes.groups.constant}));`);
+
+    saveOutput(newScript);
 };
 
 module.exports = init;

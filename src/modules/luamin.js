@@ -27,7 +27,8 @@ const assert = function(a,b) {
 }
 
 function parseFloat(str, radix) { // Thanks stackoverflow (hex numbers with decimal)
-    var parts = str.split(".");
+    if (!str) return 0;
+    var parts = str.toString().split(".");
     if (parts.length > 1) {
         return parseInt(parts[0], radix) + parseInt(parts[1], radix) / Math.pow(radix, parts[1].length);
     }
@@ -136,7 +137,15 @@ let Symbols = [
 ]
 
 let EqualSymbols = [
-    '~', '=', '>', '<',
+    '~', '=', '>', '<'
+]
+
+let CompoundSymbols = [
+    '+', '-', '*', '/', '^', '..', '%'
+]
+
+let Compounds = [
+    '+=', '-=', '*=', '/=', '^=', '..=', '%='
 ]
 
 let Keywords = [
@@ -145,7 +154,7 @@ let Keywords = [
     'function', 'goto',     'if',   'in',
     'local',    'nil',      'not',  'or', 
     'repeat',   'return',   'then', 'true', 
-    'until',    'while',
+    'until',    'while', 'continue'
 ]
 
 let BlockFollowKeyword = [
@@ -162,8 +171,10 @@ let BinopSet = [
     
     '..',   '.',     ':',   //dots / colons
     
-    '>',    '<',     '<=',  '>=',   '~=',   '==',   //arrows / conditional
+    '>',    '<',     '<=',  '>=',   '~=',   '==',  //arrows / conditional
     
+    '+=', '-=', '*=', '/=', '%=', '^=', '..=', // compounds
+
 	'and',  'or'    // conditional 
 ]
 
@@ -183,6 +194,13 @@ let BinaryPriority = {
     '<': [3, 3],
     '>=': [3, 3],
     '<=': [3, 3],
+    '+=': [3, 3],
+    '-=': [3, 3],
+    '*=': [3, 3],
+    '/=': [3, 3],
+    '^=': [3, 3],
+    '%=': [3, 3],
+    '..=': [3, 3],
     'and': [2, 2],
     'or': [1, 1],
 }
@@ -292,10 +310,17 @@ function CreateLuaTokenStream(text) {
     let tokens = 0
     function token(type) {
         tokens++
+
+        let src = text.substr(tokenStart, (p - tokenStart))
+        if (type == "Number") {
+            if (src.substr(0,2) == "0x") {
+                src = parseInt(src, 16)
+            }
+        }
         let tk = {
             'Type': type,
             'LeadingWhite': text.substr(whiteStart, (tokenStart - whiteStart)),
-            'Source': text.substr(tokenStart, (p - tokenStart))
+            'Source': src
         }
         tokenBuffer.push(tk)
 
@@ -442,10 +467,12 @@ function CreateLuaTokenStream(text) {
                 token("Symbol")
             }
         } else if(c1 == '.') {
-            // Greedily consume up to 3 `.` for . / .. / ... tokens
+            // Greedily consume up to 3 `.` for . / .. / ... tokens / ..= compound
             if (look() == '.') {
                 get()
                 if (look() == '.') {
+                    get()
+                } else if(look() == '=') {
                     get()
                 }
             }
@@ -455,6 +482,9 @@ function CreateLuaTokenStream(text) {
                 p++
             }
             token("Symbol")
+        } else if(CompoundSymbols.includes(c1) && look() == '=') {
+            get()
+            token('Symbol')
         } else if(Symbols.includes(c1)) {
             token("Symbol")
         } else {
@@ -615,10 +645,10 @@ function CreateLuaParser(text) {
                 'GetLastToken': () => node.Token,
             })
 
-            if (locals[node.Token.Source]) {
+            if (locals[node.Token.Source] != null) {
                 locals[node.Token.Source].Tokens.push(node.Token)
                 locals[node.Token.Source].UseCountIncrease()
-            } else if(upvals[node.Token.Source]) {
+            } else if(upvals[node.Token.Source] != null) {
                 upvals[node.Token.Source].Tokens.push(node.Token)
                 upvals[node.Token.Source].UseCountIncrease()
             }
@@ -626,7 +656,6 @@ function CreateLuaParser(text) {
             return node
         } else {
             print(debugMark())
-
             let a = (`${getTokenStartPosition(tk)}: Unexpected symbol. ${tk.Type} ${tk.Source}`)
             throw a
         }
@@ -636,7 +665,14 @@ function CreateLuaParser(text) {
         let obrace = expect("Symbol", "{")
         let entries = []
         let seperators = []
+        let length = 0
+
+        let lastIndex
+
+        let valLen = 0
         while (peek().Source != "}") {
+            let indx
+            let val
             if (peek().Source == '[') {
                 // Index
                 let obrac = get()
@@ -644,6 +680,9 @@ function CreateLuaParser(text) {
                 let cbrac = expect("Symbol", "]")
                 let eq = expect("Symbol", "=")
                 let value = expr(locals, upvals)
+
+                indx = index.Token && index.Token.Source
+                val = value
 
                 entries.push({
                     "EntryType": "Index",
@@ -658,6 +697,9 @@ function CreateLuaParser(text) {
                 let field = get()
                 let eq = get()
                 let value = expr(locals, upvals)
+                
+                indx = field
+                val = value
                 entries.push({
                     "EntryType": "Field",
                     "Field": field,
@@ -666,7 +708,12 @@ function CreateLuaParser(text) {
                 })
             } else {
                 // Value
+        
                 let value = expr(locals, upvals)
+                //console.log(value)
+                
+                //if (lastIndex)
+
                 entries.push({
                     "EntryType": "Value",
                     "Value": value,
@@ -748,27 +795,6 @@ function CreateLuaParser(text) {
             if (peek().Source == ":") {
                 nameChainSeperator.push(get())
                 nameChain.push(expect("Ident"))
-            }
-
-            if (local) {
-                token.UseCount = 0
-                locals[token.Source] = token
-
-                let tokens = []
-                function lol() {
-                    token.UseCount++
-                    tokens.forEach(t => {
-                        t.UseCount = token.UseCount
-                    })
-                }
-
-                token.Tokens = {}
-                token.Tokens.push = (t) => {
-                    t.UseCountIncrease = lol
-                    t.UseCount = token.UseCount
-                    tokens.push(t)
-                }
-                token.UseCountIncrease = lol
             }
         }
 
@@ -910,6 +936,21 @@ function CreateLuaParser(text) {
                     "GetLastToken": () => node.FunctionArguments.GetLastToken(),
                 })
                 base = node
+            } else if(Compounds.includes(tk.Source)) {
+                let compoundTk = get()
+                let rhsExpr = expr(locals, upvals)
+
+                let node
+                node = MkNode({
+                    "Type": "CompoundStat",
+                    "Base": base,
+                    "Token_Compound": compoundTk,
+                    "Rhs": rhsExpr,
+                    "Lhs": base,
+                    "GetFirstToken": () => node.Base.GetFirstToken(),
+                    "GetLastToken": () => node.Rhs.GetLastToken(),
+                })
+                base = node
             } else {
                 return base
             }
@@ -1024,6 +1065,8 @@ function CreateLuaParser(text) {
                 "GetLastToken": () => node.Expression.GetLastToken(),
             })
             return node
+        } else if(ex.Type == "CompoundStat") {
+            return ex
         } else {
             let lhs = [ex]
             let lhsSeperator = []
@@ -1223,7 +1266,6 @@ function CreateLuaParser(text) {
                 throw getTokenStartPosition(funcStat.Token_NameChainSeperator[0]) + ": `(` expected."
             }
 
-            let node
             node = MkNode({
                 "Type": "LocalFunctionStat",
                 "FunctionStat": funcStat,
@@ -1309,6 +1351,18 @@ function CreateLuaParser(text) {
         return self
     }
 
+    function continuestat(locals, upvals) {
+        let continueKw = get()
+        let self
+        self = {
+            "Type": "ContinueStat",
+            "Token_Continue": continueKw,
+            "GetFirstToken": () => self.Token_Continue,
+            "GetLastToken": () => self.Token_Continue,
+        }
+        return self
+    }
+
     function statement(locals, upvals) {
         let tok = peek()
         if (tok.Source == "if") {
@@ -1329,20 +1383,38 @@ function CreateLuaParser(text) {
             return [true, retstat(locals, upvals)]
         } else if(tok.Source == "break") {
             return [true, breakstat(locals, upvals)]
+        } else if(tok.Source == "continue") {
+            return [true, continuestat(locals, upvals)]
         } else {
             return [false, exprstat(locals, upvals)]
         }
     }
 
-    block = function(a) {
+
+    let blocks = 1
+    block = function(a, b) {
+        let myblocknum = blocks++
         let statements = []
         let semicolons = []
         let isLast = false
 
         let locals = []
-        let upvals = a || []
+        let upvals = []
+        if (b != null) {
+            for (let [i, v] of Object.entries(b)) {
+                upvals[i] = v
+            }
+        }
+
+        if (a != null) {
+            for (let [i, v] of Object.entries(a)) {
+                upvals[i] = v
+            }
+        }
+
 
         let thing
+        let i = 0
         while (!isLast && !isBlockFollow()) {
             if (thing && thing == peek()) {
                 print(`INFINITE LOOP POSSIBLE ON STATEMENT ${thing.Source} :`,thing)
@@ -1359,6 +1431,7 @@ function CreateLuaParser(text) {
                         stat.VarList.forEach(token => {
 
                             token.UseCount = 0
+                            token.Number = i++
                             locals[token.Source] = token
 
                             let tokens = []
@@ -1373,8 +1446,11 @@ function CreateLuaParser(text) {
                             token.Tokens.push = (t) => {
                                 t.UseCountIncrease = lol
                                 t.UseCount = token.UseCount
+                                t.Tokens = token.Tokens
                                 tokens.push(t)
                             }
+                            token.Tokens.get = () => tokens
+
                             token.UseCountIncrease = lol
                         })
                         break
@@ -1385,6 +1461,7 @@ function CreateLuaParser(text) {
                         if (nameChain.length === 1) {
                             let token = nameChain[0]
                             token.UseCount = 0
+                            token.Number = i++
                             locals[token.Source] = token
 
                             let tokens = []
@@ -1399,8 +1476,11 @@ function CreateLuaParser(text) {
                             token.Tokens.push = (t) => {
                                 t.UseCountIncrease = lol
                                 t.UseCount = token.UseCount
+                                t.Tokens = token.Tokens
                                 tokens.push(t)
                             }
+                            token.Tokens.get = () => tokens
+
                             token.UseCountIncrease = lol
                         }
                         break
@@ -1441,7 +1521,7 @@ function CreateLuaParser(text) {
         return node
     }
 
-    return block()
+    return block([], [])
 }
 
 function VisitAst(ast, visitors) {
@@ -1459,6 +1539,7 @@ function VisitAst(ast, visitors) {
     let StatType = {
 		'StatList': true,
 		'BreakStat': true,
+        'ContinueStat': true,
 		'ReturnStat': true,
 		'LocalVarStat': true,
 		'LocalFunctionStat': true,
@@ -1471,6 +1552,7 @@ function VisitAst(ast, visitors) {
 		'IfStat': true,
 		'CallExprStat': true,
 		'AssignmentStat': true,
+        'CompoundStat': true
     }
 
     for (var [visitorSubject, visitor] of Object.entries(visitors)) {
@@ -1536,6 +1618,7 @@ function VisitAst(ast, visitors) {
             // no
         } else if(expr.Type == "ParenExpr") {
             visitExpr(expr.Expression)
+
         } else if(expr.Type == "TableLiteral") {
             expr.EntryList.forEach((entry, index) => {
                 if (entry.EntryType == "Field") {
@@ -1549,6 +1632,9 @@ function VisitAst(ast, visitors) {
                     throw "unreachable"
                 }
             })
+        } else if(expr.Type == "CompoundStat") {
+            visitExpr(expr.Lhs)
+            visitExpr(expr.Rhs)
         } else {
             throw `unreachable, type: ${expr.Type}: ${expr}`
         }
@@ -1576,6 +1662,8 @@ function VisitAst(ast, visitors) {
             })
         } else if(stat.Type == "BreakStat") {
             // no
+        } else if(stat.Type == "ContinueStat") {
+            // fuck off
         } else if(stat.Type == "ReturnStat") {
             stat.ExprList.forEach((expr, index) => {
                 visitExpr(expr)
@@ -1619,6 +1707,8 @@ function VisitAst(ast, visitors) {
             })
         } else if(stat.Type == "CallExprStat") {
             visitExpr(stat.Expression)
+        } else if(stat.Type == "CompoundStat") {
+            visitExpr(stat.Rhs)
         } else if(stat.Type == "AssignmentStat") {
             stat.Lhs.forEach((ex) => {
                 visitExpr(ex)
@@ -2067,6 +2157,8 @@ function PrintAst(ast) {
                 }
             })
             printt(expr.Token_CloseBrace)
+        } else if(expr.Type == "CompoundStat") {
+            printStat(expr)
         } else {
             throw `unreachable, type: ${expr.Type}: ${expr}`
         }
@@ -2094,6 +2186,8 @@ function PrintAst(ast) {
 
         } else if(stat.Type == "BreakStat") {
             printt(stat.Token_Break)
+        } else if(stat.Type == "ContinueStat") {
+            printt(stat.Token_Continue)
         } else if(stat.Type == "ReturnStat") {
             printt(stat.Token_Return)
             stat.ExprList.forEach((expr, index) => {
@@ -2234,6 +2328,11 @@ function PrintAst(ast) {
             printt(stat.Token_End)
         } else if(stat.Type == "CallExprStat") {
             printExpr(stat.Expression)
+        } else if(stat.Type == "CompoundStat") { // Fuck you Wally
+            printExpr(stat.Lhs)
+            printt(stat.Token_Compound)
+            printExpr(stat.Rhs)
+            stat.Type = "CompoundStat"
         } else if(stat.Type == "AssignmentStat") {
             stat.Lhs.forEach((ex, index) => {
                 printExpr(ex)
@@ -2299,7 +2398,7 @@ function FormatAst(ast) {
         if (tk.LeadingWhite.length > 0) {
             return tk.LeadingWhite.substr(0,1)
         } else {
-            return tk.Source.substr(0,1)
+            return tk.Source.toString().substr(0,1)
         }
     }
 
@@ -2324,12 +2423,13 @@ function FormatAst(ast) {
         if (expr.Type == "BinopExpr") {
             formatExpr(expr.Lhs)
             formatExpr(expr.Rhs)
-            if (expr.Token_Op.Source == "..") {
-
-            } else {
+            //if (expr.Token_Op.Source == "..") { // ayeaye
+            //    expr.Token_Op.LeadingWhite = " "
+             //   expr.Rhs.GetFirstToken.LeadingWhite = " "
+            //} else {
                 padExpr(expr.Rhs)
                 padToken(expr.Token_Op)
-            }
+            //}
         } else if(expr.Type == "UnopExpr") {
             formatExpr(expr.Rhs)
         } else if(expr.Type == "NumberLiteral" || expr.Type == "StringLiteral"
@@ -2436,6 +2536,8 @@ function FormatAst(ast) {
                     applyIndent(expr.Token_CloseBrace)
                 }
             }
+        } else if(expr.Type == 'CompoundStat') {
+            formatStat(expr)
         } else {
             print(expr)
             throw(`unreachable, type: ${expr.Type}:`+ expr)
@@ -2458,6 +2560,8 @@ function FormatAst(ast) {
             })
         } else if(stat.Type == "BreakStat") {
             // no
+        } else if(stat.Type == "ContinueStat") {
+            // fuck off
         } else if(stat.Type == "ReturnStat") {
             
             stat.ExprList.forEach((expr, index) => {
@@ -2621,6 +2725,11 @@ function FormatAst(ast) {
             formatBody(lastBodyOpen, lastBody, stat.Token_End)
         } else if(stat.Type == "CallExprStat") {
             formatExpr(stat.Expression)
+        } else if(stat.Type == "CompoundStat") {
+            padExpr(stat.Lhs)
+            formatExpr(stat.Lhs)
+            
+            formatExpr(stat.Rhs)
         } else if(stat.Type == "AssignmentStat") {
             stat.Lhs.forEach((ex, index) => {
                 formatExpr(ex)
@@ -2661,8 +2770,8 @@ function StripAst(ast) {
 
         stript(tokenB)
         
-        let lastCh = tokenA.Source.substr(-0,1)
-        let firstCh = tokenB.Source.substr(0,1)
+        let lastCh = tokenA.Source.toString().substr(-0,1)
+        let firstCh = tokenB.Source.toString().substr(0,1)
 
         if ((lastCh == "-" && firstCh == "-") || (AllIdentChars.includes(lastCh) && AllIdentChars.includes(firstCh))) {
             tokenB.LeadingWhite = ' '
@@ -2816,6 +2925,8 @@ function StripAst(ast) {
             }
         } else if(stat.Type == "BreakStat") {
             stript(stat.Token_Break)
+        } else if(stat.Type == "ContinueStat") {
+            stript(stat.Token_Continue)
         } else if(stat.Type == "ReturnStat") {
             stript(stat.Token_Return)
             stat.ExprList.forEach((expr, index) => {
@@ -2990,6 +3101,15 @@ function StripAst(ast) {
             bodyjoint(lastBodyOpen, lastBody, stat.Token_End)
         } else if(stat.Type == "CallExprStat") {
             stripExpr(stat.Expression)
+        } else if(stat.Type == "CompoundStat") {
+            stripExpr(stat.Lhs)
+            stript(stat.Token_Compound)
+            stripExpr(stat.Rhs)
+
+            joint(stat.Lhs.GetLastToken, stat.Token_Compound)
+            joint(stat.Token_Compound, stat.Rhs.GetFirstToken)
+
+            lastBody = stat.Body
         } else if(stat.Type == "AssignmentStat") {
             stat.Lhs.forEach((ex, index) => {
                 stripExpr(ex)
@@ -3038,7 +3158,7 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
             "Token": {
                 "Type": type2 == null ? "Number" : type2,
                 "LeadingWhite": "",
-                "Source": "" + val,
+                "Source": val,
             },
             "GetFirstToken": () => a.Token,
             "GetLastToken": () => a.Token,
@@ -3051,7 +3171,7 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
         a = {
             "Type": type,
             "LeadingWhite": "",
-            "Source": "" + val,
+            "Source": val,
         }
         return a
     }
@@ -3064,6 +3184,18 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
             "Lhs": lhs,
             "Rhs": rhs,
             "GetFirstToken": () => a.Lhs.GetFirstToken(),
+            "GetLastToken": () => a.Rhs.GetLastToken(),
+        }
+        return a
+    }
+
+    function createunop(operator, rhs) {
+        let a
+        a = {
+            "Type": "UnopExpr",
+            "Token_Op": {"Type":"Symbol", "LeadingWhite":"", "Source": operator},
+            "Rhs": rhs,
+            "GetFirstToken": () => a.Token_Op,
             "GetLastToken": () => a.Rhs.GetLastToken(),
         }
         return a
@@ -3103,10 +3235,16 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
         return newret
     }
 
+    function removeParen(a) {
+        if (typeof a == "object" && a.Type == "ParenExpr")
+            return replace(a, a.Expression)
+    }
 
-    function solvebinop(operator, lhs, rhs) {
-        if (lhs && lhs.Type == "ParenExpr") lhs = lhs.Expression;
-        if (rhs && rhs.Type == "ParenExpr") rhs = rhs.Expression;
+    function solvebinop(operator, left1, right1) {
+        let lhs = left1
+        let rhs = right1
+        if (left1 && left1.Type == "ParenExpr") lhs = left1.Expression;
+        if (right1 && right1.Type == "ParenExpr") rhs = right1.Expression;
 
         if (lhs == null || rhs == null || lhs.Type == null || rhs.Type == null) return;
 
@@ -3194,34 +3332,56 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
         if (rhs.Type == "TableLiteral" && b != null) {
             let extra = []
             let amount = 0
-            let metCall = false
+            let ignoreRest = false
+            let no = false
+            let lastIndex = 0
+
             b.forEach((v,i) => {
-                if (metCall) {
+                if (ignoreRest) {
                     extra.push(v)
                 } else {
                     if (v.EntryType == "Value" || v.EntryType == "Index") {
-                        if (v.Index == null || (v.Index.Type == "NumberLiteral" && v.Value)) {
+                        if ((v.Index == null || v.Index.Type == "NumberLiteral") && v.Value) {
+
+                            let index = (v.Index != null && v.Index.Token != null && v.Index.Token.Source !== null) ? (v.Index.Token.Source) : lastIndex + 1
+
+                            if (index.toString() !== (++lastIndex).toString()) {
+                                ignoreRest = true
+                                no = true
+                                return extra.push(v)
+                            }
+
                             if (v.Value.Type != "CallExpr") {
                                 amount++
                             } else {
-                                metCall = true
+                                ignoreRest = true
                                 extra.push(v)
                             }
+
+                        } else {
+                            extra.push(v)
+                            //no = true
                         }
                     }
                 }
             })
             // this became a mess really quick
-            rhs.EntryList = extra
+
+            if (no) {
+                return
+            }
 
             if (operator == "#") {
+
+                rhs.EntryList = extra
+
                 if (rhs.EntryList.length <= 0) {
-                    return createtype("NumberLiteral", amount || 0)
+                    return createtype("NumberLiteral", amount !== null ? amount : rhs.EntryList.length)
                 } else if(amount <= 0) {
-                    return rhs
+                    return createunop("#", rhs)
                 }
     
-                let newex = createbinop("+", createtype("NumberLiteral", amount), rhs);
+                let newex = createbinop("+", createtype("NumberLiteral", amount), createunop("#", rhs));
                 return newex
             }
         }
@@ -3241,10 +3401,11 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
         }
 
         if (right != null) {
-            if (operator == "#") return (right.length);
+            if (operator == "#") return right.length;
             if (operator == "-") return -right;
         }
     }
+
 
     solveExpr = function(expr) {
         if (expr.Type == "BinopExpr") {
@@ -3271,7 +3432,7 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
                             return
                         } else if(typeof(val) == "number") {
                             if (isFinite(val) == true) {
-                                let num = createtype("NumberLiteral", val, "Number")
+                                let num = createtype("NumberLiteral", val.toString(), "Number")
                                 replace(expr, num)
                                 return
                             }
@@ -3285,6 +3446,25 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
                             return
                         }
                         return
+                    }
+                }
+                
+                if (expr.Lhs.Type == "ParenExpr") {
+                    let exprt = expr.Lhs
+                    let expression = exprt.Expression
+                    if(expression.Type == "NumberLiteral" || expression.Type == "StringLiteral"
+                        || expression.Type == "NilLiteral" || expression.Type == "BooleanLiteral")
+                    {
+                        //expr.Lhs = expression
+                    }
+                }
+                if (expr.Rhs.Type == "ParenExpr") {
+                    let exprt = expr.Rhs
+                    let expression = exprt.Expression
+                    if(expression.Type == "NumberLiteral" || expression.Type == "StringLiteral"
+                        || expression.Type == "NilLiteral" || expression.Type == "BooleanLiteral")
+                    {
+                        //expr.Rhs = expression
                     }
                 }
             }
@@ -3339,7 +3519,7 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
                     let int = parseFloat(token.Source)
 
                     if (int !== null && isFinite(int))
-                        token.Source = int + "";
+                        token.Source = int.toString();
                 }
 
                 if (token.Type == "String") {
@@ -3379,6 +3559,13 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
                 expr.Expression = exprExpr.Expression
             }
             solveExpr(expr.Expression)
+
+            if(expr.Type == "NumberLiteral" || expr.Type == "StringLiteral"
+                || expr.Type == "NilLiteral" || expr.Type == "BooleanLiteral"
+                || expr.Type == "VargLiteral") 
+            {
+                removeParen(expr)
+            }
         } else if(expr.Type == "TableLiteral") {
             expr.EntryList.forEach((entry, index) => {
                 if (entry.EntryType == "Field") {
@@ -3412,6 +3599,8 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
             })
         } else if(stat.Type == "BreakStat") {
             // no
+        } else if(stat.Type == "ContinueStat") {
+            // fuck off
         } else if(stat.Type == "ReturnStat") {
             stat.ExprList.forEach((expr, index) => {
                 solveExpr(expr)
@@ -3427,7 +3616,7 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
 
             if (stat.FunctionStat.NameChain.length === 1) {
                 if (stat.FunctionStat.NameChain[0].UseCount === 0) {
-                    //return stat.Remove()
+                    return stat.Remove()
                 }
             }
 
@@ -3451,18 +3640,19 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
             })
             solveStat(stat.Body)
 
-            if (stat.Body.Type == "StatList" && stat.Body.StatementList.length === 0) {
-                //return stat.Remove()
-            }
-            
+
             let a = stat.RangeList[0]
             let b = stat.RangeList[1]
             let c = stat.RangeList[2]
             if (a == null || b == null) {
-                //return stat.Remove()
+                return stat.Remove()
             }
 
-            if (a.Type != "NumberLiteral" || b.Type != "NumberLiteral" || (c != null && c.Type != "NumberLiteral") ) {
+            removeParen(a)
+            removeParen(b)
+            removeParen(c)
+
+            if (a.Type != "NumberLiteral" || b.Type != "NumberLiteral" || (c != null && c.Type != "NumberLiteral" || c == null) ) {
                 return // Nope.
             }
 
@@ -3476,7 +3666,11 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
             let willRun = t1 && t2 >= 0
 
             if (!willRun) {
-                //return stat.Remove()
+                return stat.Remove()
+            }
+
+            if (stat.Body.Type == "StatList" && stat.Body.StatementList.length === 0) {
+                return stat.Remove()
             }
         } else if(stat.Type == "WhileStat") {
             solveExpr(stat.Condition)
@@ -3493,7 +3687,7 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
                     }
                 }
                 case "NilLiteral":
-                    //stat.Remove()
+                    stat.Remove()
                     break
 
                 default: break
@@ -3502,7 +3696,7 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
             solveStat(stat.Body)
 
             if (stat.Body === null || (stat.Body.Type == "StatList" && stat.Body.StatementList.length == 0)) {
-                //return stat.Remove()
+                return stat.Remove()
             }
         } else if(stat.Type == "IfStat") {
             solveExpr(stat.Condition)
@@ -3514,8 +3708,27 @@ function SolveMath(ast) { // This is some ugly code sorry for whoever is seeing 
                 solveStat(clause.Body)   
             })
 
+            let condition = stat.Condition
+            switch (condition.Type) {
+                case "ParenExpr": {
+                    condition = condition.Expression
+                }
+                case "BooleanLiteral": {
+                    if (condition == null || condition.Token == null || condition.Token.Source !== "false") {
+                        break
+                    }
+                }
+                case "NilLiteral":
+                    stat.Remove()
+                    break
+
+                default: break
+            }
         } else if(stat.Type == "CallExprStat") {
             solveExpr(stat.Expression)
+        } else if(stat.Type == "CompoundStat") {
+            solveExpr(stat.Lhs)
+            solveExpr(stat.Rhs)
         } else if(stat.Type == "AssignmentStat") {
             stat.Lhs.forEach((ex, index) => {
                 solveExpr(ex)
@@ -3907,8 +4120,8 @@ function Uglify(ast) {
 
         let maxstrlength = 100
 
-        let leftover = value - Math.min(value, maxtablelength) // Set max table length to 100
-        let strlol = genHexString(Math.min(value, maxtablelength))
+        let leftover = value - Math.min(value, maxstrlength) // Set max table length to 100
+        let strlol = genHexString(Math.min(value, maxstrlength))
 
         let scr = `
             local a = "${strlol}"
@@ -4010,8 +4223,8 @@ function Uglify(ast) {
                     if (value !== null && typeof(value) == "number" && isFinite(value)) {
                         if (howtofuckup === 0) { // Slow as fuck
                             // #String
-                            //let newexpr = turnNumberToFString(value)
-                            //replace(expr, newexpr)
+                            let newexpr = turnNumberToFString(value)
+                            replace(expr, newexpr)
                             break// uglifyExpr(expr, true) // Just fucks me up
                         } else if(howtofuckup == 1) {
                             // Math shit
@@ -4047,7 +4260,7 @@ function Uglify(ast) {
 
                     let [str, start, end] = removething(expr.Token.Source)
 
-                    let howtofuckup = Math.floor(Math.random() * 5)
+                    let howtofuckup = 1//Math.floor(Math.random() * 5)
                     if (howtofuckup == 0) {
                         let b = ""
                         let staph = false
@@ -4225,6 +4438,8 @@ function Uglify(ast) {
             }
         } else if(stat.Type == "BreakStat") {
             stript(stat.Token_Break)
+        } else if(stat.Type == "ContinueStat") {
+            stript(stat.Token_Continue)
         } else if(stat.Type == "ReturnStat") {
             stript(stat.Token_Return)
             stat.ExprList.forEach((expr, index) => {
@@ -4399,6 +4614,9 @@ function Uglify(ast) {
             bodyjoint(lastBodyOpen, lastBody, stat.Token_End)
         } else if(stat.Type == "CallExprStat") {
             uglifyExpr(stat.Expression, uglied)
+        } else if(stat.Type == "CompoundStat") {
+            uglifyExpr(stat.Lhs)
+            uglifyExpr(stat.Rhs)
         } else if(stat.Type == "AssignmentStat") {
             stat.Lhs.forEach((ex, index) => {
                 uglifyExpr(ex, uglied)
@@ -4900,12 +5118,10 @@ luaminp.Uglify = function(src1, options) {
             })*/
             return
         }
-        //console.log 
         alreadyAdded[v.Name] = v
-        //console.log("Heey", v)
 
         ast1.SemicolonList = [{type: "Symbol", Source: ";", LeadingWhite: ""}].concat(ast1.SemicolonList)
-        lol = [CreateLuaParser(`local ${v.Name} = ${v.Name}`).StatementList[0]].concat(lol)
+        lol = [CreateLuaParser(`local ${v.Name} = getfenv()['${v.Name}']`).StatementList[0]].concat(lol)
 
         //v.AssignedTo = true
         /*v.RenameList.push((a) => {
