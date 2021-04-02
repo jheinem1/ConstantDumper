@@ -1,6 +1,6 @@
 # ConstantDumper
  
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa wew
+basically the same as the original but has a much better serializer 
 
 # Requirements
  * [Node.js](https://nodejs.org/) v14.15.4
