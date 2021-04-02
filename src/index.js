@@ -29,7 +29,7 @@ async function saveOutput(script) {
         pos++;
     });
 
-    constants = `local Constants = {\n\t[0] = "dumped using dsf's dumper https://discord.gg/tPXUvFF4uH",\n${constants.slice(0, -2)}\n};`;
+    constants = `local Constants = {\n\t[0] = "serialized with https://github.com/jheinem1/ConstantDumper",\n${constants.slice(0, -2)}\n};`;
 
     unlinkSync(fileName);
     writeFileSync("constants.lua", "--[[\n\tDumped using dsf's dumper https://discord.gg/tPXUvFF4uH\n--]]\n\n"+constants);
